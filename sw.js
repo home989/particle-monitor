@@ -16,6 +16,29 @@ self.addEventListener('activate', e => {
   );
 });
 
+// Web Push: fires even when the app is closed and the phone is locked
+self.addEventListener('push', e => {
+  e.waitUntil(
+    self.registration.showNotification('Sensor alert', {
+      body: 'Reed sensor changed state — tap to view',
+      icon: 'icon-192.png',
+      badge: 'icon-192.png',
+      vibrate: [200, 100, 200],
+      tag: 'reed-sensor'
+    })
+  );
+});
+
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  e.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
+      for (const c of list) { if ('focus' in c) return c.focus(); }
+      return clients.openWindow('./');
+    })
+  );
+});
+
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
   // Never intercept Particle API traffic (live data + SSE stream)
