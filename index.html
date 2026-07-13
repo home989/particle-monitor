@@ -48,17 +48,6 @@
   .iconbtn:active { opacity: .7; }
   main { max-width: 760px; margin: 0 auto; padding: 16px; }
 
-  .banner {
-    display: none;
-    background: var(--red); color: #fff;
-    border-radius: 10px; padding: 13px 15px; margin-bottom: 14px;
-    font-weight: 600; font-size: 14px;
-    animation: flash 1s ease infinite alternate;
-  }
-  .banner.show { display: flex; align-items: center; gap: 8px; }
-  .banner button { margin-left: auto; background: rgba(255,255,255,.2); border: 0; color: #fff; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
-  @keyframes flash { from { opacity: 1; } to { opacity: .75; } }
-
   .card {
     background: var(--card); border: 1px solid var(--border);
     border-radius: 12px; padding: 15px; margin-bottom: 12px;
@@ -151,11 +140,6 @@
 </header>
 
 <main>
-  <div class="banner" id="alertBanner">
-    <span id="alertText"></span>
-    <button onclick="dismissAlert()">Dismiss</button>
-  </div>
-
   <div id="sensorStatus"></div>
 
   <div id="deviceList"><div class="empty" id="emptyMsg">Loading…</div></div>
@@ -198,9 +182,9 @@ let cfg = { token: '', reedEvent: 'reed', pollMin: 10 };
 let devices = [];          // [{id, name, online, last_heard}]
 let vitals = {};           // deviceId -> parsed vitals
 let pollTimer = null;
-const REED_KEY = 'particleMonitorReedState';
-let reedState = null;      // { state: 'OPEN'|'CLOSED', data, device, time }
-try { reedState = JSON.parse(localStorage.getItem(REED_KEY)); } catch (e) {}
+const REED_KEY = 'particleMonitorReedStates';
+let reedStates = {};       // coreid -> { state: 'OPEN'|'CLOSED', data, device, time }
+try { reedStates = JSON.parse(localStorage.getItem(REED_KEY)) || {}; } catch (e) {}
 
 /* ---------- config ---------- */
 function loadCfg() {
@@ -359,35 +343,35 @@ function handleParticleEvent(name, payload) {
   const devName = (devices.find(d => d.id === payload.coreid) || {}).name || payload.coreid;
   const data = (payload.data || '').toUpperCase();
   const state = data.startsWith('OPEN') ? 'OPEN' : data.startsWith('CLOSED') ? 'CLOSED' : 'TRIGGERED';
-  reedState = {
+  reedStates[payload.coreid] = {
     state, data: payload.data || '', device: devName,
     time: payload.published_at || new Date().toISOString()
   };
-  localStorage.setItem(REED_KEY, JSON.stringify(reedState));
+  localStorage.setItem(REED_KEY, JSON.stringify(reedStates));
   renderSensor();
 
   if (state === 'OPEN' || state === 'TRIGGERED') {
-    showAlert('⚠️ ' + (state === 'OPEN' ? 'OPEN' : 'Sensor triggered') + ' — ' + devName + (payload.data ? ' (' + payload.data + ')' : ''));
     notify('Sensor ' + state, devName + (payload.data ? ': ' + payload.data : ''));
     if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
-  } else {
-    dismissAlert();
   }
 }
 
 function renderSensor() {
   const wrap = document.getElementById('sensorStatus');
-  if (!reedState) {
+  const entries = Object.values(reedStates);
+  if (!entries.length) {
     wrap.innerHTML = '<div class="sensor"><div class="slabel">Sensor</div><div class="sstate" style="color:var(--muted)">—</div><div class="ssub">No open/close event received yet</div></div>';
     return;
   }
-  const cls = reedState.state === 'OPEN' ? 'open' : reedState.state === 'CLOSED' ? 'closed' : 'open';
-  wrap.innerHTML = `
+  wrap.innerHTML = entries.map(s => {
+    const cls = s.state === 'CLOSED' ? 'closed' : 'open';
+    return `
     <div class="sensor ${cls}">
-      <div class="slabel">${esc(reedState.device)} — reed sensor</div>
-      <div class="sstate">${esc(reedState.state)}</div>
-      <div class="ssub">since ${fmtTime(reedState.time)}${reedState.data ? ' · ' + esc(reedState.data) : ''}</div>
+      <div class="slabel">${esc(s.device)} — reed sensor</div>
+      <div class="sstate">${esc(s.state)}</div>
+      <div class="ssub">since ${fmtTime(s.time)}${s.data ? ' · ' + esc(s.data) : ''}</div>
     </div>`;
+  }).join('');
 }
 
 /* ---------- notifications ---------- */
@@ -478,11 +462,6 @@ async function refreshOne(id, btn) {
 }
 
 /* ---------- alerts & ui ---------- */
-function showAlert(msg) {
-  document.getElementById('alertText').textContent = msg;
-  document.getElementById('alertBanner').classList.add('show');
-}
-function dismissAlert() { document.getElementById('alertBanner').classList.remove('show'); }
 function setLive(on) { document.getElementById('liveDot').classList.toggle('live', on); }
 function toast(msg) {
   const t = document.getElementById('toast');
