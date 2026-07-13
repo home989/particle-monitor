@@ -162,13 +162,18 @@
 <div class="overlay" id="settingsOverlay">
   <div class="sheet">
     <h3>Settings</h3>
-    <label for="tokenInput">Particle access token</label>
-    <input id="tokenInput" type="password" placeholder="Paste your access token" autocomplete="off">
-    <div class="hint">
-      Generate one with the Particle CLI: <b>particle token create</b><br>
-      or in the <a href="https://console.particle.io" target="_blank" rel="noopener">Particle console</a>.
-      The token is stored only on this device.
+    <label>Log in with your Particle account</label>
+    <input id="puserInput" type="email" placeholder="Particle account email" autocomplete="username">
+    <input id="ppassInput" type="password" placeholder="Particle account password" autocomplete="current-password" style="margin-top:8px">
+    <input id="potpInput" type="text" placeholder="6-digit code from your authenticator app" autocomplete="one-time-code" style="margin-top:8px; display:none">
+    <button class="btn primary" id="ploginBtn" type="button" style="width:100%; margin-top:10px" onclick="particleLogin()">Get access token</button>
+    <div class="hint" id="ploginStatus">
+      Your login goes directly to api.particle.io and is used once to generate
+      an access token. Only the token is stored, and only on this device.
     </div>
+    <label for="tokenInput">Particle access token (filled automatically, or paste your own)</label>
+    <input id="tokenInput" type="password" placeholder="Access token" autocomplete="off">
+    <div class="hint">Advanced alternative: create one manually with the Particle CLI (<b>particle token create</b>).</div>
     <label for="reedInput">Reed sensor event name (prefix match)</label>
     <input id="reedInput" type="text" placeholder="reed">
     <div class="hint">The event name your firmware publishes when the reed sensor triggers, e.g. <b>reed</b> matches <b>reed/front-door</b>.</div>
@@ -450,6 +455,53 @@ function toast(msg) {
   const t = document.getElementById('toast');
   t.textContent = msg; t.style.display = 'block';
   clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', 4000);
+}
+
+/* ---------- particle login (OAuth password grant to api.particle.io) ---------- */
+let mfaToken = null;
+async function particleLogin() {
+  const user = document.getElementById('puserInput').value.trim();
+  const pass = document.getElementById('ppassInput').value;
+  const otp = document.getElementById('potpInput').value.trim();
+  const btn = document.getElementById('ploginBtn');
+  const status = document.getElementById('ploginStatus');
+  if (!user || !pass) { status.textContent = 'Enter your Particle email and password first.'; return; }
+  btn.disabled = true; btn.textContent = 'Contacting Particle…';
+  try {
+    let body;
+    if (mfaToken && otp) {
+      body = 'grant_type=urn%3Acustom%3Amfa-otp&mfa_token=' + encodeURIComponent(mfaToken) + '&otp=' + encodeURIComponent(otp);
+    } else {
+      body = 'grant_type=password&username=' + encodeURIComponent(user) + '&password=' + encodeURIComponent(pass) + '&expires_in=0';
+    }
+    const r = await fetch('https://api.particle.io/oauth/token', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Basic ' + btoa('particle:particle'),
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body
+    });
+    const j = await r.json();
+    if (j.access_token) {
+      document.getElementById('tokenInput').value = j.access_token;
+      document.getElementById('ppassInput').value = '';
+      document.getElementById('potpInput').value = '';
+      document.getElementById('potpInput').style.display = 'none';
+      mfaToken = null;
+      status.textContent = '✓ Token received — now press Save below.';
+    } else if (j.mfa_token) {
+      mfaToken = j.mfa_token;
+      document.getElementById('potpInput').style.display = 'block';
+      status.textContent = 'Two-factor auth is on for this account — enter the 6-digit code from your authenticator app, then press the button again.';
+    } else {
+      status.textContent = 'Login failed: ' + (j.error_description || j.error || 'unknown error') + '. Check your email/password.';
+    }
+  } catch (e) {
+    status.textContent = 'Could not reach Particle: ' + e.message;
+  } finally {
+    btn.disabled = false; btn.textContent = 'Get access token';
+  }
 }
 
 /* ---------- settings ---------- */
