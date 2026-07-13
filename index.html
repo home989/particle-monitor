@@ -220,7 +220,9 @@ async function loadDevices() {
   const list = await api('/v1/devices');
   devices = list.map(d => ({
     id: d.id, name: d.name || d.id, online: d.online,
-    last_heard: d.last_heard, platform: d.platform_id
+    last_heard: d.last_heard, platform: d.platform_id,
+    // product_id === platform_id for personal devices; differs for product devices
+    productId: (d.product_id && d.product_id !== d.platform_id) ? d.product_id : null
   }));
 }
 
@@ -278,19 +280,29 @@ function setRefreshing(on) {
    names here are arbitrary — so we parse the SSE stream with fetch. */
 function connectStream() {
   if (!cfg.token) return;
-  streamEvents(handleParticleEvent);
+  if (streamAbort) streamAbort.abort();
+  streamAbort = new AbortController();
+  liveStreams = 0;
+  // Stream the user's device events, plus each product's event stream
+  // (events from product-owned devices are published to the product stream)
+  const urls = [API + '/v1/devices/events/'];
+  [...new Set(devices.map(d => d.productId).filter(Boolean))].forEach(pid =>
+    urls.push(API + '/v1/products/' + pid + '/events/'));
+  urls.forEach(u => streamEvents(u, handleParticleEvent, streamAbort));
 }
 
 let streamAbort = null;
-async function streamEvents(handler) {
-  if (streamAbort) streamAbort.abort();
-  streamAbort = new AbortController();
-  const myAbort = streamAbort;
-  const url = API + '/v1/devices/events/?access_token=' + encodeURIComponent(cfg.token);
+let liveStreams = 0;
+const seenEvents = new Set();
+async function streamEvents(url, handler, ctl) {
+  const myAbort = ctl;
   try {
-    const resp = await fetch(url, { signal: streamAbort.signal });
-    if (!resp.ok) { setLive(false); return; }
-    setLive(true);
+    const resp = await fetch(url, {
+      headers: { 'Authorization': 'Bearer ' + cfg.token },
+      signal: myAbort.signal
+    });
+    if (!resp.ok) { return; }
+    liveStreams++; setLive(true);
     const reader = resp.body.getReader();
     const dec = new TextDecoder();
     let buf = '';
@@ -305,10 +317,11 @@ async function streamEvents(handler) {
       }
     }
   } catch (e) { /* aborted or network drop */ }
-  setLive(false);
+  liveStreams = Math.max(0, liveStreams - 1);
+  if (liveStreams === 0) setLive(false);
   // reconnect after a short delay unless this stream was superseded/aborted
   if (!myAbort.signal.aborted) {
-    setTimeout(() => { if (!myAbort.signal.aborted) streamEvents(handler); }, 5000);
+    setTimeout(() => { if (!myAbort.signal.aborted) streamEvents(url, handler, myAbort); }, 5000);
   }
 }
 function parseSSE(chunk, handler) {
@@ -323,6 +336,11 @@ function parseSSE(chunk, handler) {
 
 function handleParticleEvent(name, payload) {
   // payload: { data, ttl, published_at, coreid }
+  // Dedupe: same event can arrive on both the device and product streams
+  const key = name + '|' + payload.coreid + '|' + payload.published_at;
+  if (seenEvents.has(key)) return;
+  seenEvents.add(key);
+  if (seenEvents.size > 500) seenEvents.clear();
   const isReed = cfg.reedEvent && name.toLowerCase().startsWith(cfg.reedEvent.toLowerCase());
   const devName = (devices.find(d => d.id === payload.coreid) || {}).name || payload.coreid;
   events.unshift({
