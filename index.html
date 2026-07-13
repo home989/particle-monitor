@@ -90,17 +90,20 @@
   .minibtn:disabled { opacity: .4; }
 
   h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin: 20px 0 10px; }
-  .event {
-    display: flex; gap: 10px; align-items: baseline;
-    padding: 9px 4px; border-bottom: 1px solid var(--border);
-    font-size: 13px;
-  }
-  .event:last-child { border: 0; }
-  .event .ename { font-weight: 600; color: var(--red); }
-  .event .ename.other { color: var(--accent); }
-  .event .edata { color: var(--text); flex: 1; word-break: break-word; }
-  .event .etime { color: var(--muted); font-size: 11px; white-space: nowrap; }
   .empty { color: var(--muted); font-size: 13px; padding: 12px 4px; }
+
+  /* sensor state card */
+  .sensor {
+    border-radius: 14px; padding: 26px 20px; margin-bottom: 14px;
+    text-align: center; border: 1px solid var(--border); background: var(--card);
+  }
+  .sensor .slabel { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 8px; }
+  .sensor .sstate { font-size: 44px; font-weight: 800; letter-spacing: .02em; }
+  .sensor.open { border-color: var(--red); background: rgba(255,93,93,.08); }
+  .sensor.open .sstate { color: var(--red); }
+  .sensor.closed { border-color: var(--green); background: rgba(52,209,123,.07); }
+  .sensor.closed .sstate { color: var(--green); }
+  .sensor .ssub { font-size: 12px; color: var(--muted); margin-top: 8px; }
 
   /* Settings modal */
   .overlay {
@@ -153,10 +156,9 @@
     <button onclick="dismissAlert()">Dismiss</button>
   </div>
 
-  <div id="deviceList"><div class="empty" id="emptyMsg">Loading…</div></div>
+  <div id="sensorStatus"></div>
 
-  <h2>Sensor event log</h2>
-  <div class="card" id="eventLog"><div class="empty">No events yet this session.</div></div>
+  <div id="deviceList"><div class="empty" id="emptyMsg">Loading…</div></div>
 </main>
 
 <div class="overlay" id="settingsOverlay">
@@ -196,7 +198,9 @@ let cfg = { token: '', reedEvent: 'reed', pollMin: 10 };
 let devices = [];          // [{id, name, online, last_heard}]
 let vitals = {};           // deviceId -> parsed vitals
 let pollTimer = null;
-let events = [];           // session event log
+const REED_KEY = 'particleMonitorReedState';
+let reedState = null;      // { state: 'OPEN'|'CLOSED', data, device, time }
+try { reedState = JSON.parse(localStorage.getItem(REED_KEY)); } catch (e) {}
 
 /* ---------- config ---------- */
 function loadCfg() {
@@ -341,24 +345,49 @@ function handleParticleEvent(name, payload) {
   if (seenEvents.has(key)) return;
   seenEvents.add(key);
   if (seenEvents.size > 500) seenEvents.clear();
-  const isReed = cfg.reedEvent && name.toLowerCase().startsWith(cfg.reedEvent.toLowerCase());
-  const devName = (devices.find(d => d.id === payload.coreid) || {}).name || payload.coreid;
-  events.unshift({
-    name, data: payload.data || '', device: devName,
-    time: payload.published_at || new Date().toISOString(), reed: isReed
-  });
-  if (events.length > 50) events.pop();
-  renderEvents();
 
-  if (isReed) {
-    showAlert('⚠️ Reed sensor triggered on ' + devName + (payload.data ? ' — ' + payload.data : ''));
-    notify('Reed sensor triggered', devName + (payload.data ? ': ' + payload.data : ''));
-    if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
-  }
   // vitals events refresh the dashboard
   if (name === 'spark/device/diagnostics/update') {
     loadVitals(payload.coreid).then(render);
+    return;
   }
+
+  // Only reed sensor events matter — ignore webhook plumbing (hook-sent/hook-error/etc.)
+  const isReed = cfg.reedEvent && name.toLowerCase().startsWith(cfg.reedEvent.toLowerCase());
+  if (!isReed) return;
+
+  const devName = (devices.find(d => d.id === payload.coreid) || {}).name || payload.coreid;
+  const data = (payload.data || '').toUpperCase();
+  const state = data.startsWith('OPEN') ? 'OPEN' : data.startsWith('CLOSED') ? 'CLOSED' : 'TRIGGERED';
+  reedState = {
+    state, data: payload.data || '', device: devName,
+    time: payload.published_at || new Date().toISOString()
+  };
+  localStorage.setItem(REED_KEY, JSON.stringify(reedState));
+  renderSensor();
+
+  if (state === 'OPEN' || state === 'TRIGGERED') {
+    showAlert('⚠️ ' + (state === 'OPEN' ? 'OPEN' : 'Sensor triggered') + ' — ' + devName + (payload.data ? ' (' + payload.data + ')' : ''));
+    notify('Sensor ' + state, devName + (payload.data ? ': ' + payload.data : ''));
+    if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+  } else {
+    dismissAlert();
+  }
+}
+
+function renderSensor() {
+  const wrap = document.getElementById('sensorStatus');
+  if (!reedState) {
+    wrap.innerHTML = '<div class="sensor"><div class="slabel">Sensor</div><div class="sstate" style="color:var(--muted)">—</div><div class="ssub">No open/close event received yet</div></div>';
+    return;
+  }
+  const cls = reedState.state === 'OPEN' ? 'open' : reedState.state === 'CLOSED' ? 'closed' : 'open';
+  wrap.innerHTML = `
+    <div class="sensor ${cls}">
+      <div class="slabel">${esc(reedState.device)} — reed sensor</div>
+      <div class="sstate">${esc(reedState.state)}</div>
+      <div class="ssub">since ${fmtTime(reedState.time)}${reedState.data ? ' · ' + esc(reedState.data) : ''}</div>
+    </div>`;
 }
 
 /* ---------- notifications ---------- */
@@ -446,20 +475,6 @@ async function refreshOne(id, btn) {
     await loadVitals(id);
     render();
   } catch (e) { toast(e.message); }
-}
-
-function renderEvents() {
-  const log = document.getElementById('eventLog');
-  if (!events.length) {
-    log.innerHTML = '<div class="empty">No events yet this session.</div>';
-    return;
-  }
-  log.innerHTML = events.map(e => `
-    <div class="event">
-      <span class="ename ${e.reed ? '' : 'other'}">${esc(e.name)}</span>
-      <span class="edata">${esc(e.device)}${e.data ? ' — ' + esc(e.data) : ''}</span>
-      <span class="etime">${fmtTime(e.time)}</span>
-    </div>`).join('');
 }
 
 /* ---------- alerts & ui ---------- */
@@ -557,6 +572,7 @@ if ('serviceWorker' in navigator) {
 }
 
 loadCfg();
+renderSensor();
 if (cfg.token) {
   askNotifyPermission();
   schedulePoll();
